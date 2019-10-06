@@ -15,12 +15,7 @@ class QtDeployHelper(ConanFile):
 
     def package(self):
         self.copy("*", src="Common", dst="CMake")
-        if self.settings.os == "Android":
-            self.copy("*", src="Android", dst="CMake")
-        elif self.settings.os == "Emscripten":
-            self.copy("*", src="Emscripten", dst="CMake")
-        else:
-            self.output.warn("This os is not supported: " + self.settings.os)
+        self.copy("*", src=str(self.settings.os), dst="CMake")
             
     def package_info(self):
         self.cpp_info.builddirs = ["CMake"]
