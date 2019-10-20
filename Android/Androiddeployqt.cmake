@@ -45,7 +45,6 @@ endif()
 find_package(Java COMPONENTS Development REQUIRED)
 if(Java_JAVA_EXECUTABLE)
     get_filename_component(JAVA_HOME_DIR "${Java_JAVA_EXECUTABLE}/../.." ABSOLUTE)
-    set(ENV{JAVA_HOME} "${JAVA_HOME_DIR}")
 endif()
 
 # find the Qt root directory
@@ -54,17 +53,29 @@ get_filename_component(QT_ANDROID_QT_ROOT "${Qt5Core_DIR}/../../.." ABSOLUTE)
 
 find_program(ANDROID_DEPLOY_QT "androiddeployqt" PATHS "${QT_ANDROID_QT_ROOT}/bin")
 if(ANDROID_DEPLOY_QT)
-    message(STATUS "Found Qt for android root: ${QT_ANDROID_QT_ROOT}")
+    message(STATUS "Found Qt for Android: ${QT_ANDROID_QT_ROOT}")
 else()
     message(FATAL_ERROR "Missing 'androiddeployqt'. Is this Qt for android?")
 endif()
 
 # find the Android SDK
 find_path(ANDROID_SDK_ROOT "tools/lib/android.el" PATHS "$ENV{ANDROID_SDK_ROOT}" "$ENV{ANDROID_SDK}")
+if(ANDROID_SDK_ROOT)
+    message(STATUS "Found Android SDK: ${ANDROID_SDK_ROOT}")
+else()
+    message(FATAL_ERROR "Missing ANDROID_SDK_ROOT root")
+endif()
 string(REPLACE "\\" "/" QT_ANDROID_SDK_ROOT ${ANDROID_SDK_ROOT}) # androiddeployqt doesn't like backslashes in paths
 
+get_filename_component(NDK_HINT "${CMAKE_TOOLCHAIN_FILE}" DIRECTORY)
+
 # find the Android NDK
-find_path(ANDROID_NDK_ROOT "build/cmake/android.toolchain.cmake" PATHS "$ENV{ANDROID_NDK_ROOT}" "$ENV{ANDROID_NDK}")
+find_path(ANDROID_NDK_ROOT "build/cmake/android.toolchain.cmake" PATHS "$ENV{ANDROID_NDK_ROOT}" "$ENV{ANDROID_NDK}" "${NDK_HINT}/../../")
+if(ANDROID_NDK_ROOT)
+    message(STATUS "Found Android NDK: ${ANDROID_NDK_ROOT}")
+else()
+    message(FATAL_ERROR "Missing ANDROID_NDK_ROOT root")
+endif()
 string(REPLACE "\\" "/" QT_ANDROID_NDK_ROOT ${ANDROID_NDK_ROOT}) # androiddeployqt doesn't like backslashes in paths
 
 include(CMakeParseArguments)
@@ -72,20 +83,45 @@ include(QtDeployCommon)
 
 # This function takes a cmake target and prepares it for deployment. The target has to be a shared library.
 #
-# example:
 # androiddeployqt(<target>
-#     [APP_NAME <app-name>]
-#     PACKAGE "org.mycompany.myapp"
-#     PACKAGE_SOURCES ${CMAKE_CURRENT_LIST_DIR}/my-android-sources
-#     KEYSTORE ${CMAKE_CURRENT_LIST_DIR}/mykey.keystore myalias
-#     KEYSTORE_PASSWORD xxxx
-#     DEPENDS a_linked_target "path/to/a_linked_library.so" ...
+#     [NAME <app-name>]
+#     [PACKAGE <package-name>]
+#     [PACKAGE_SOURCES <path>]
+#     [STYLE_EXTRACTION [DEFAULT|FULL|MINIMAL|NONE]]
+#     [QML_ROOT_PATH <path>]
 #     [MIN_SDK_VERSION <int>]
 #     [TARGET_SDK_VERSION <int>]
-#     [VERSION_CODE <int>]
-#     [VERSION_STRING <string>]
+#     [VERSION_CODE <int> [VERSION_STRING <string>]]
+#     [KEYSTORE <keystore path> <keystore alias>]
+#     [KEYSTORE_PASSWORD <keystore pwd>]
+#     [DEPENDS <path> | <target> ...]
 #)
-# 
+#
+# NAME: The name of your app. Defaults to target name.
+# PACKAGE: The package in reverse domain name notation (e.g. "org.mydomain.awesomeapp"). Defaults to "org.qtproject.${NAME}".
+# PACKAGE_SOURCES: You may want to specify a directory where all android specific files are located (like AndroidManifest.xml, apptheme.xml, ..). As a minimum you have to provide your own valid 
+#   AndroidManifest.xml. If the manifest contains the Qt specific placeholders (like "-- %%INSERT_LOCAL_LIBS%% --", "- %%INSERT_INIT_CLASSES%% --") these will be automatically replaced by androiddeployqt.
+#   Use the AndroidManifest.xml in you Qt install folder as a basis for your custom manifest (<QT_HOME>/src/android/templates).
+# STYLE_EXTRACTION: Use FULL for QWidget & Quick Controls 1 apps, MINIMAL for Quick Controls 2 apps (it is much faster than "FULL"), NONE for everything else.
+#   There is a fourth option DEFAULT - In most cases this will be the same as "FULL", but it can also be something else if needed, e.g., for compatibility reasons. Defaults to MINIMAL if QML_ROOT_PATH is given DEFAULT otherwise.
+# QML_ROOT_PATH: If you want to deploy a QML application you sould provide the root directory where the qml files are located. The files will we searched for dependencies which will then be included in the apk.
+# MIN_SDK_VERSION: Provide a specific min sdk version. Defaults to autodetection or 21 if detection fails.
+# TARGET_SDK_VERSION: Provide a specific target sdk version. Defaults to 28.
+# VERSION_CODE: Provide a version code [0, 2100000000]. By default derived from PROJECT_VERSION and CMAKE_ANDROID_ARCH_ABI. If PROJECT_VERSION is missing the version will be in the range of [0, 9].
+#   If both (PROJECT_VERSION and CMAKE_ANDROID_ARCH_ABI) are missing it will default to 0. Allowed ranges: PROJECT_VERSION_MAJOR [0, 2099], PROJECT_VERSION_MINOR [0, 99],  PROJECT_VERSION_PATCH [0, 99], PROJECT_VERSION_TWEAK [0, 9]
+#   If you plan to deploy multiple apks targeting DIFFERENT abi's the version code has to be different between those apks.
+# VERSION_STRING: Provide a version name. By default derived from VERSION_CODE.
+# KEYSTORE: If you want to sign the apk you have to provide a keystore file (like .jks) and the alias like: /path/mykey.jks myalias
+# KEYSTORE_PASSWORD: A password for your keystore
+# DEPENDS: libraries (besides Qt) that should be deployed too. Either provide a valid target or the absolute path of the library.
+#
+# This function will introducte some new handy targets:
+# apk: Creates an apk
+# apk-install: Creates and installs an apk on the connected android device
+# apk-run: Creates and installs and starts an apk on the connected android device
+# apk-debug: Creates and installs and attatches a debugger on the connected android device
+# install-private: Is called by the default cmake install target. This will copy the apk to the CMAKE_INSTALL_PREFIX
+
 function(androiddeployqt TARGET)
 
     if(TARGET ${TARGET})
@@ -101,30 +137,66 @@ function(androiddeployqt TARGET)
     set(ARG_TARGET ${TARGET})
 
     # parse the arguments
-    cmake_parse_arguments(ARG "" "NAME;PACKAGE;PACKAGE_SOURCES;KEYSTORE_PASSWORD;QML_ROOT_PATH;VERSION_CODE;VERSION_STRING" "DEPENDS;KEYSTORE" ${ARGN})
+    cmake_parse_arguments(ARG "" "NAME;PACKAGE;PACKAGE_SOURCES;STYLE_EXTRACTION;KEYSTORE_PASSWORD;QML_ROOT_PATH;VERSION_CODE;VERSION_STRING;MIN_SDK_VERSION;TARGET_SDK_VERSION" "DEPENDS;KEYSTORE" ${ARGN})
 
     # generate a default version code by reading the project version (if set)
     if(NOT ARG_VERSION_CODE)
-        message(STATUS "Trying to derive a VERSION_CODE from PROJECT_VERSION")
+
         set(ARG_VERSION_CODE "0")
+
         if(DEFINED PROJECT_VERSION_MAJOR AND NOT PROJECT_VERSION_MAJOR STREQUAL "")
-            math(EXPR ARG_VERSION_CODE "${ARG_VERSION_CODE} + ${PROJECT_VERSION_MAJOR} * 1000000")
+            if(PROJECT_VERSION_MAJOR LESS "2100" AND PROJECT_VERSION_MAJOR GREATER "-1")
+                math(EXPR ARG_VERSION_CODE "${ARG_VERSION_CODE} + ${PROJECT_VERSION_MAJOR} * 1000000")
+            else()
+                message(FATAL_ERROR "PROJECT_VERSION_MAJOR exceeding the allowed range of [0, 2099]")
+            endif()
         endif()
         if(DEFINED PROJECT_VERSION_MINOR AND NOT PROJECT_VERSION_MINOR STREQUAL "")
-            math(EXPR ARG_VERSION_CODE "${ARG_VERSION_CODE} + ${PROJECT_VERSION_MINOR} * 10000")
+            if(PROJECT_VERSION_MINOR LESS "100" AND PROJECT_VERSION_MINOR GREATER "-1")
+                math(EXPR ARG_VERSION_CODE "${ARG_VERSION_CODE} + ${PROJECT_VERSION_MINOR} * 10000")
+            else()
+                message(FATAL_ERROR "PROJECT_VERSION_MINOR exceeding the allowed range of [0, 99]")
+            endif()
         endif()
         if(DEFINED PROJECT_VERSION_PATCH AND NOT PROJECT_VERSION_PATCH STREQUAL "")
-            math(EXPR ARG_VERSION_CODE "${ARG_VERSION_CODE} + ${PROJECT_VERSION_PATCH} * 100")
+            if(PROJECT_VERSION_PATCH LESS "100" AND PROJECT_VERSION_PATCH GREATER "-1")
+                math(EXPR ARG_VERSION_CODE "${ARG_VERSION_CODE} + ${PROJECT_VERSION_PATCH} * 100")
+            else()
+                message(FATAL_ERROR "PROJECT_VERSION_PATCH exceeding the allowed range of [0, 99]")
+            endif()
         endif()
         if(DEFINED PROJECT_VERSION_TWEAK AND NOT PROJECT_VERSION_TWEAK STREQUAL "")
-            math(EXPR ARG_VERSION_CODE "${ARG_VERSION_CODE} + ${PROJECT_VERSION_TWEAK} * 1")
+            if(PROJECT_VERSION_TWEAK LESS "10" AND PROJECT_VERSION_TWEAK GREATER "-1")
+                math(EXPR ARG_VERSION_CODE "${ARG_VERSION_CODE} + ${PROJECT_VERSION_TWEAK} * 10")
+            else()
+                message(FATAL_ERROR "PROJECT_VERSION_TWEAK exceeding the allowed range of [0, 9]")
+            endif()
+        endif()
+        if(CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
+            math(EXPR ARG_VERSION_CODE "${ARG_VERSION_CODE} + 1")
+        elseif(CMAKE_ANDROID_ARCH_ABI STREQUAL "armeabi-v7a" AND NOT CMAKE_ANDROID_ARM_NEON)
+            math(EXPR ARG_VERSION_CODE "${ARG_VERSION_CODE} + 2")
+        elseif(CMAKE_ANDROID_ARCH_ABI STREQUAL "armeabi-v7a" AND CMAKE_ANDROID_ARM_NEON)
+            math(EXPR ARG_VERSION_CODE "${ARG_VERSION_CODE} + 3")
+        elseif(CMAKE_ANDROID_ARCH_ABI STREQUAL "armeabi-v6")
+            math(EXPR ARG_VERSION_CODE "${ARG_VERSION_CODE} + 4")
+        elseif(CMAKE_ANDROID_ARCH_ABI STREQUAL "armeabi")
+            math(EXPR ARG_VERSION_CODE "${ARG_VERSION_CODE} + 5")
+        elseif(CMAKE_ANDROID_ARCH_ABI STREQUAL "mips")
+            math(EXPR ARG_VERSION_CODE "${ARG_VERSION_CODE} + 6")
+        elseif(CMAKE_ANDROID_ARCH_ABI STREQUAL "mips64")
+            math(EXPR ARG_VERSION_CODE "${ARG_VERSION_CODE} + 7")
+        elseif(CMAKE_ANDROID_ARCH_ABI STREQUAL "x86")
+            math(EXPR ARG_VERSION_CODE "${ARG_VERSION_CODE} + 8")
+        elseif(CMAKE_ANDROID_ARCH_ABI STREQUAL "x86_64")
+            math(EXPR ARG_VERSION_CODE "${ARG_VERSION_CODE} + 9")
+        else()
+            message(WARNING "Couldn't read valid CMAKE_ANDROID_ARCH_ABI. The VERSION_CODE won't be distinguishable between different abi's")
         endif()
     endif()
 
     if(NOT ARG_MIN_SDK_VERSION)
         set(ARG_MIN_SDK_VERSION 21)
-
-        message(STATUS "Trying to detect a minSdkVersion")
 
         if(DEFINED ANDROID_PLATFORM_LEVEL)
             set(QT_ANDROID_API_LVL ${ANDROID_PLATFORM_LEVEL})
@@ -137,7 +209,7 @@ function(androiddeployqt TARGET)
         if(QT_ANDROID_API_LVL GREATER 0)
             set(ARG_MIN_SDK_VERSION ${QT_ANDROID_API_LVL})
         else()
-            message(STATUS "Using a default targetSdkVersion of ${ARG_MIN_SDK_VERSION}")
+            message(STATUS "Using a default minSdkVersion of ${ARG_MIN_SDK_VERSION}")
         endif()
     endif()
 
@@ -147,16 +219,15 @@ function(androiddeployqt TARGET)
     endif()
 
     if(NOT ARG_VERSION_CODE MATCHES "^[0-9]+$")
-        message(FATAL_ERROR "The given VERSION_CODE '${ARG_VERSION_CODE}' is not a valid number!")
+        message(FATAL_ERROR "The given VERSION_CODE '${ARG_VERSION_CODE}' is not a valid number")
     endif()
 
     if(ARG_VERSION_CODE LESS "0" OR ARG_VERSION_CODE GREATER "2100000000")
-        message(FATAL_ERROR "The given VERSION_CODE '${ARG_VERSION_CODE}' is not in the valid range [0, 2100000000]!")
+        message(FATAL_ERROR "The given VERSION_CODE '${ARG_VERSION_CODE}' is not in the valid range [0, 2100000000]")
     endif()
 
     # generate a default version name by reading the project version (if set). Otherwise use the VERSION_CODE as VERSION_STRING
     if(NOT ARG_VERSION_NAME)
-        message(STATUS "Trying to derive a VERSION_STRING from PROJECT_VERSION")
         set(ARG_VERSION_NAME ${ARG_VERSION_CODE})
         if(DEFINED PROJECT_VERSION AND NOT PROJECT_VERSION STREQUAL "")
             set(ARG_VERSION_NAME ${PROJECT_VERSION})
@@ -165,7 +236,7 @@ function(androiddeployqt TARGET)
 
     # define the application name
     if(NOT ARG_NAME)
-        message(STATUS "Generating a APP_NAME from the target")
+        message(STATUS "Generating a NAME from the target")
         set(ARG_NAME ${ARG_TARGET})
     endif()
 
@@ -174,17 +245,27 @@ function(androiddeployqt TARGET)
         message(STATUS "Generating a PACKAGE from the target")
         set(ARG_PACKAGE "org.qtproject.${ARG_NAME}")
     endif()
-
-    message(STATUS "The apk manifest will contain following values:")
-    message(STATUS "    name: ${ARG_NAME}")
-    message(STATUS "    package: ${ARG_PACKAGE}")
-    message(STATUS "    versionCode: ${ARG_VERSION_CODE}")
-    message(STATUS "    versionName: ${ARG_VERSION_NAME}")
-    message(STATUS "    minSdkVersion: ${ARG_MIN_SDK_VERSION}")
-    message(STATUS "    targetSdkVersion: ${ARG_TARGET_SDK_VERSION}")
-
-    set(QT_ANDROID_APP_NAME ${ARG_NAME})
-    set(QT_ANDROID_APP_PACKAGE_NAME ${ARG_PACKAGE})
+    
+    if(ARG_QML_ROOT_PATH)
+        message(STATUS "Deploying a QML application from ${ARG_QML_ROOT_PATH}")
+        set(QT_ANDROID_QML_ROOT_PATH "${ARG_QML_ROOT_PATH}")
+    endif()
+    
+    # detect style extraction method
+    if(NOT ARG_STYLE_EXTRACTION)
+        set(ARG_STYLE_EXTRACTION default)
+        if(ARG_QML_ROOT_PATH)
+            set(ARG_STYLE_EXTRACTION minimal)
+        endif()
+    else()
+        string(TOLOWER ${ARG_STYLE_EXTRACTION} ARG_STYLE_EXTRACTION)
+    endif()
+    
+    if(NOT(ARG_STYLE_EXTRACTION STREQUAL minimal OR ARG_STYLE_EXTRACTION STREQUAL full OR ARG_STYLE_EXTRACTION STREQUAL none OR ARG_STYLE_EXTRACTION STREQUAL default))
+        message(FATAL_ERROR "Invalid value provided for option STYLE_EXTRACTION")
+    endif()
+    
+    message(STATUS "Using style extraction method: ${ARG_STYLE_EXTRACTION}")
 
     # detect latest Android SDK build-tools revision
     set(QT_ANDROID_SDK_BUILDTOOLS_REVISION "0.0.0")
@@ -202,6 +283,31 @@ function(androiddeployqt TARGET)
         message(FATAL_ERROR "Couldn't detect SDK build tools version")
     endif()
 
+    # define the STL shared library path
+    if(ANDROID_STL_SHARED_LIBRARIES)
+        list(GET ANDROID_STL_SHARED_LIBRARIES 0 STL_LIBRARY_NAME) # we can only give one to androiddeployqt
+        if(ANDROID_STL_PATH)
+            set(QT_ANDROID_STL_PATH "${ANDROID_STL_PATH}/libs/${ANDROID_ABI}/lib${STL_LIBRARY_NAME}.so")
+        else()
+            set(QT_ANDROID_STL_PATH "${ANDROID_NDK_ROOT}/sources/cxx-stl/${ANDROID_STL_PREFIX}/libs/${ANDROID_ABI}/lib${STL_LIBRARY_NAME}.so")
+        endif()
+        message(STATUS "STL in use ${QT_ANDROID_STL_PATH}")
+    else()
+        message(FATAL_ERROR "Couldn't find a STL")
+    endif()
+
+    message(STATUS "The apk manifest will contain following values:")
+    message(STATUS "    abi: ${CMAKE_ANDROID_ARCH_ABI}")
+    message(STATUS "    name: ${ARG_NAME}")
+    message(STATUS "    package: ${ARG_PACKAGE}")
+    message(STATUS "    versionCode: ${ARG_VERSION_CODE}")
+    message(STATUS "    versionName: ${ARG_VERSION_NAME}")
+    message(STATUS "    minSdkVersion: ${ARG_MIN_SDK_VERSION}")
+    message(STATUS "    targetSdkVersion: ${ARG_TARGET_SDK_VERSION}")
+
+    set(QT_ANDROID_APP_NAME ${ARG_NAME})
+    set(QT_ANDROID_APP_PACKAGE_NAME ${ARG_PACKAGE})
+
     # define the application source package directory
     if(ARG_PACKAGE_SOURCES)
         message(STATUS "You specified 'PACKAGE_SOURCES'. You have to provide your own manifest")
@@ -210,19 +316,10 @@ function(androiddeployqt TARGET)
         # create a subdirectory for the extra package sources
         set(QT_ANDROID_APP_PACKAGE_SOURCE_ROOT "${CMAKE_CURRENT_BINARY_DIR}/package")
 
-        # copy the Qt provided manifest and modify it
-        copy_replace_in_file("${QT_ANDROID_QT_ROOT}/src/android/templates/AndroidManifest.xml" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/AndroidManifest.xml.in" MATCH "package=\"org.qtproject.example\"" REPLACE "package=\"@ARG_PACKAGE@\"")
-        replace_in_file("${CMAKE_CURRENT_BINARY_DIR}/AndroidManifest.xml.in" MATCH "-- %%INSERT_VERSION_NAME%% --" REPLACE "@ARG_VERSION_NAME@")
-        replace_in_file("${CMAKE_CURRENT_BINARY_DIR}/AndroidManifest.xml.in" MATCH "-- %%INSERT_VERSION_CODE%% --" REPLACE "@ARG_VERSION_CODE@")
-        replace_in_file("${CMAKE_CURRENT_BINARY_DIR}/AndroidManifest.xml.in" MATCH "-- %%INSERT_APP_NAME%% --" REPLACE "@ARG_NAME@")
-        replace_in_file("${CMAKE_CURRENT_BINARY_DIR}/AndroidManifest.xml.in" MATCH "android:minSdkVersion=\"16\"" REPLACE "android:minSdkVersion=\"@ARG_MIN_SDK_VERSION@\"")
-        replace_in_file("${CMAKE_CURRENT_BINARY_DIR}/AndroidManifest.xml.in" MATCH "android:targetSdkVersion=\"28\"" REPLACE "android:targetSdkVersion=\"@ARG_TARGET_SDK_VERSION@\"")
-
-        file(READ "${CMAKE_CURRENT_BINARY_DIR}/AndroidManifest.xml.in" CONTENT)
+        file(READ "${QT_ANDROID_QT_ROOT}/src/android/templates/AndroidManifest.xml" CONTENT)
         string(REGEX MATCH "android:configChanges=\"([^\"]*)\"" MATCH ${CONTENT})
 
         if(MATCH)
-            set(QT_ANDROID_APP_CONFIG_CHANGES_BACKUP ${CMAKE_MATCH_1})
             set(QT_ANDROID_APP_CONFIG_CHANGES ${CMAKE_MATCH_1})
 
             if(ARG_MIN_SDK_VERSION LESS 24)
@@ -249,27 +346,28 @@ function(androiddeployqt TARGET)
                 string(REPLACE "uiMode|" "" QT_ANDROID_APP_CONFIG_CHANGES ${QT_ANDROID_APP_CONFIG_CHANGES})
                 string(REPLACE "uiMode" "" QT_ANDROID_APP_CONFIG_CHANGES ${QT_ANDROID_APP_CONFIG_CHANGES})
             endif()
-
-            replace_in_file("${CMAKE_CURRENT_BINARY_DIR}/AndroidManifest.xml.in" MATCH ${QT_ANDROID_APP_CONFIG_CHANGES_BACKUP} REPLACE "@QT_ANDROID_APP_CONFIG_CHANGES@")
         endif()
+
+        # copy the Qt provided manifest and modify it
+        #copy_replace_in_file("${QT_ANDROID_QT_ROOT}/src/android/templates/AndroidManifest.xml" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/AndroidManifest.xml.in" MATCH "package=\"org.qtproject.example\"" REPLACE "package=\"@ARG_PACKAGE@\"")
+        #replace_in_file("${CMAKE_CURRENT_BINARY_DIR}/AndroidManifest.xml.in" MATCH "-- %%INSERT_VERSION_NAME%% --" REPLACE "@ARG_VERSION_NAME@")
+        #replace_in_file("${CMAKE_CURRENT_BINARY_DIR}/AndroidManifest.xml.in" MATCH "-- %%INSERT_VERSION_CODE%% --" REPLACE "@ARG_VERSION_CODE@")
+        #replace_in_file("${CMAKE_CURRENT_BINARY_DIR}/AndroidManifest.xml.in" MATCH "-- %%INSERT_APP_NAME%% --" REPLACE "@ARG_NAME@")
+        #replace_in_file("${CMAKE_CURRENT_BINARY_DIR}/AndroidManifest.xml.in" MATCH "android:minSdkVersion=\"16\"" REPLACE "android:minSdkVersion=\"@ARG_MIN_SDK_VERSION@\"")
+        #replace_in_file("${CMAKE_CURRENT_BINARY_DIR}/AndroidManifest.xml.in" MATCH "android:targetSdkVersion=\"28\"" REPLACE "android:targetSdkVersion=\"@ARG_TARGET_SDK_VERSION@\"")
+
+        #replace_in_file("${CMAKE_CURRENT_BINARY_DIR}/AndroidManifest.xml.in" MATCH "<!-- meta-data android:name=\"android.app.splash_screen_drawable\" android:resource=\"@drawable/logo\"/ -->" REPLACE "<meta-data android:name=\"android.app.splash_screen_drawable\" android:resource=\"@drawable/splash\" />")
+        #replace_in_file("${CMAKE_CURRENT_BINARY_DIR}/AndroidManifest.xml.in" MATCH "android:launchMode=\"singleTop\">" REPLACE "android:theme=\"@style/AppTheme\"\nandroid:launchMode=\"singleTop\">")
+        #replace_in_file("${CMAKE_CURRENT_BINARY_DIR}/AndroidManifest.xml.in" MATCH "<meta-data android:name=\"android.app.extract_android_style\" android:value=\"default\"/>" REPLACE "<meta-data android:name=\"android.app.extract_android_style\" android:value=\"${ARG_STYLE_EXTRACTION}\"/>")
+        file(COPY "${QT_ANDROID_SOURCE_DIR}/res" DESTINATION "${QT_ANDROID_APP_PACKAGE_SOURCE_ROOT}/")
+        #file(COPY "${QT_ANDROID_SOURCE_DIR}/logo.png" DESTINATION "${QT_ANDROID_APP_PACKAGE_SOURCE_ROOT}/res/drawable")
+        #file(COPY "${QT_ANDROID_SOURCE_DIR}/splash.xml" DESTINATION "${QT_ANDROID_APP_PACKAGE_SOURCE_ROOT}/res/drawable")
+        #file(COPY "${QT_ANDROID_SOURCE_DIR}/apptheme.xml" DESTINATION "${QT_ANDROID_APP_PACKAGE_SOURCE_ROOT}/res/values")
+        #file(COPY "${QT_ANDROID_SOURCE_DIR}/colors.xml" DESTINATION "${QT_ANDROID_APP_PACKAGE_SOURCE_ROOT}/res/values")
 
         # generate a manifest from the qt template
-        configure_file("${CMAKE_CURRENT_BINARY_DIR}/AndroidManifest.xml.in" "${QT_ANDROID_APP_PACKAGE_SOURCE_ROOT}/AndroidManifest.xml" @ONLY)
+        configure_file("${QT_ANDROID_SOURCE_DIR}/AndroidManifest.xml.in" "${QT_ANDROID_APP_PACKAGE_SOURCE_ROOT}/AndroidManifest.xml" @ONLY)
         #configure_file("${QT_ANDROID_SOURCE_DIR}/AndroidManifest.xml.in" "${QT_ANDROID_APP_PACKAGE_SOURCE_ROOT}/AndroidManifest.xml" @ONLY)
-    endif()
-
-    # define the STL shared library path
-    if(ANDROID_STL_SHARED_LIBRARIES)
-        list(GET ANDROID_STL_SHARED_LIBRARIES 0 STL_LIBRARY_NAME) # we can only give one to androiddeployqt
-        if(ANDROID_STL_PATH)
-            set(QT_ANDROID_STL_PATH "${ANDROID_STL_PATH}/libs/${ANDROID_ABI}/lib${STL_LIBRARY_NAME}.so")
-        else()
-            set(QT_ANDROID_STL_PATH "${ANDROID_NDK_ROOT}/sources/cxx-stl/${ANDROID_STL_PREFIX}/libs/${ANDROID_ABI}/lib${STL_LIBRARY_NAME}.so")
-        endif()
-        message(STATUS "STL in use ${QT_ANDROID_STL_PATH}")
-    else()
-        message(WARNING "Couldn't find a STL")
-        set(QT_ANDROID_STL_PATH)
     endif()
     
     # set the list of dependant libraries
@@ -292,10 +390,6 @@ function(androiddeployqt TARGET)
         endforeach()
         set(QT_ANDROID_APP_EXTRA_LIBS "\"android-extra-libs\": \"${EXTRA_LIBS}\",")
     endif()
-    
-    if(ARG_QML_ROOT_PATH)
-        set(QT_ANDROID_QML_ROOT_PATH "${ARG_QML_ROOT_PATH}")
-    endif()
 
     # set some toolchain variables used by androiddeployqt;
     # unfortunately, Qt tries to build paths from these variables although these full paths
@@ -316,17 +410,24 @@ function(androiddeployqt TARGET)
 
     # check if the apk must be signed
     if(ARG_KEYSTORE)
-        set(SIGN_OPTIONS --release --sign ${ARG_KEYSTORE} --tsa http://timestamp.digicert.com)
-        if(ARG_KEYSTORE_PASSWORD)
-            set(SIGN_OPTIONS ${SIGN_OPTIONS} --storepass ${ARG_KEYSTORE_PASSWORD})
+        if (NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+            message(STATUS "Apk will be signed with the provided certificate")
+            set(SIGN_OPTIONS --release --sign ${ARG_KEYSTORE} --tsa http://timestamp.digicert.com)
+            if(ARG_KEYSTORE_PASSWORD)
+                set(SIGN_OPTIONS ${SIGN_OPTIONS} --storepass ${ARG_KEYSTORE_PASSWORD})
+            endif()
+        else()
+            message(WARNING "Apk will be signed with a debug certificate even though you provided a keystore file. Switch to a release build to use the provided certificate")
         endif()
+    else()
+        message(STATUS "Apk will be signed with a debug certificate")
     endif()
 
     # specify the Android API level
     if(QT_ANDROID_API_LVL GREATER 0)
         set(TARGET_LEVEL_OPTIONS --android-platform android-${QT_ANDROID_API_LVL})
     else()
-        message(WARNING "Couldn't determine android platform version. Will use the highest available version.")
+        message(WARNING "Couldn't determine android platform version. Will use the highest available version")
     endif()
 
     # create a custom command that will run the androiddeployqt utility to generate the APK
@@ -336,49 +437,60 @@ function(androiddeployqt TARGET)
         COMMAND ${CMAKE_COMMAND} -E remove_directory ${CMAKE_CURRENT_BINARY_DIR}/libs/${ANDROID_ABI} # it seems that recompiled libraries are not copied if we don't remove them first
         COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/libs/${ANDROID_ABI}
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${ARG_TARGET}> ${CMAKE_CURRENT_BINARY_DIR}/libs/${ANDROID_ABI}
-        COMMAND ${ANDROID_DEPLOY_QT} $<$<BOOL:${CMAKE_VERBOSE_MAKEFILE}>:--verbose> --output ${CMAKE_CURRENT_BINARY_DIR} --input ${CMAKE_CURRENT_BINARY_DIR}/qtdeploy.json --jdk ${JAVA_HOME_DIR} --gradle ${TARGET_LEVEL_OPTIONS} ${SIGN_OPTIONS}
+        COMMAND ${ANDROID_DEPLOY_QT} $<$<BOOL:${CMAKE_VERBOSE_MAKEFILE}>:--verbose> --output ${CMAKE_CURRENT_BINARY_DIR} --input ${CMAKE_CURRENT_BINARY_DIR}/qtdeploy.json $<$<CONFIG:Debug>:--no-strip> $<$<CONFIG:RelWithDebInfo>:--no-strip> $<$<CONFIG:Release>:--release> $<$<CONFIG:RelWithDebInfo>:--release> $<$<CONFIG:MinSizeRel>:--release> --no-generated-assets-cache --jdk ${JAVA_HOME_DIR} --gradle ${TARGET_LEVEL_OPTIONS} ${SIGN_OPTIONS}
     )
     
     # create a custom command that will install the APK on a connected android device
     add_custom_target(
         apk-install
         DEPENDS apk
-        COMMAND ${ANDROID_DEPLOY_QT} $<$<BOOL:${CMAKE_VERBOSE_MAKEFILE}>:--verbose> --no-build --reinstall --output ${CMAKE_CURRENT_BINARY_DIR} --input ${CMAKE_CURRENT_BINARY_DIR}/qtdeploy.json --jdk ${JAVA_HOME_DIR} --gradle ${TARGET_LEVEL_OPTIONS} ${SIGN_OPTIONS}
+        COMMAND ${ANDROID_DEPLOY_QT} $<$<BOOL:${CMAKE_VERBOSE_MAKEFILE}>:--verbose> --no-build --reinstall --output ${CMAKE_CURRENT_BINARY_DIR} --input ${CMAKE_CURRENT_BINARY_DIR}/qtdeploy.json $<$<CONFIG:Debug>:--no-strip> $<$<CONFIG:RelWithDebInfo>:--no-strip> $<$<CONFIG:Release>:--release> $<$<CONFIG:RelWithDebInfo>:--release> $<$<CONFIG:MinSizeRel>:--release> --no-generated-assets-cache --jdk ${JAVA_HOME_DIR} --gradle ${TARGET_LEVEL_OPTIONS} ${SIGN_OPTIONS}
     )
 
-    # create a custom command that will install the APK on a connected android device
+    # create a custom command that will start activity on a connected android device
     add_custom_target(
         apk-run
-        COMMAND ${ANDROID_NDK_ROOT}/ndk-gdb --adb ${ANDROID_SDK_ROOT}/platform-tools/adb --project ${CMAKE_CURRENT_BINARY_DIR} --launch-list
+        DEPENDS apk-install
+        COMMAND ${ANDROID_SDK_ROOT}/platform-tools/adb shell am start -n ${ARG_PACKAGE}/org.qtproject.qt5.android.bindings.QtActivity
+    )
+    
+    # create a custom command that will start debugging session activity on a connected android device
+    add_custom_target(
+        apk-debug
+        DEPENDS apk-install
+        #COMMAND ${ANDROID_NDK_ROOT}/ndk-gdb --adb ${ANDROID_SDK_ROOT}/platform-tools/adb --project ${CMAKE_CURRENT_BINARY_DIR} --launch-list
         COMMAND ${ANDROID_NDK_ROOT}/ndk-gdb --adb ${ANDROID_SDK_ROOT}/platform-tools/adb --project ${CMAKE_CURRENT_BINARY_DIR} --launch --verbose
     )
-
-    #add_custom_target(NDK_GDB ALL)
-    #add_dependencies(NDK_GDB ${TARGET_NAME})
+    
+    add_custom_target(
+        install-private
+        DEPENDS apk
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_CURRENT_BINARY_DIR}/build/outputs/apk/$<$<CONFIG:Debug>:debug>$<$<NOT:$<CONFIG:Debug>>:release>" "${CMAKE_INSTALL_PREFIX}"
+    )
+    
+    install(CODE "execute_process(COMMAND \"${CMAKE_COMMAND}\" --build \"${CMAKE_BUILD_DIRECTORY}\" --target install-private)")
     
     #set(GDB_SOLIB_PATH ${CMAKE_CURRENT_BINARY_DIR}/obj/local/${ANDROID_NDK_ABI_NAME}/)
     
     # 1. generate essential Android Makefiles
-    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/jni/Android.mk "APP_ABI := ${ANDROID_ABI}\n")
-    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/jni/Application.mk "APP_ABI := ${ANDROID_ABI}\n")
+    #file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/jni/Android.mk "APP_ABI := ${ANDROID_ABI}\n")
+    #file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/jni/Application.mk "APP_ABI := ${ANDROID_ABI}\n")
 
     # 2. generate gdb.setup
-    get_directory_property(PROJECT_INCLUDES DIRECTORY ${PROJECT_SOURCE_DIR} INCLUDE_DIRECTORIES)
-    message(STATUS "--------------${PROJECT_INCLUDES}")
-    string(REGEX REPLACE ";" " " PROJECT_INCLUDES "${PROJECT_INCLUDES}")
-    file(WRITE  ${CMAKE_CURRENT_BINARY_DIR}/libs/${ANDROID_NDK_ABI_NAME}/gdb.setup "set solib-search-path ./libs/${ANDROID_NDK_ABI_NAME}\n")
-    file(APPEND ${CMAKE_CURRENT_BINARY_DIR}/libs/${ANDROID_NDK_ABI_NAME}/gdb.setup "directory ${PROJECT_INCLUDES}\n")
+    #get_directory_property(PROJECT_INCLUDES DIRECTORY ${PROJECT_SOURCE_DIR} INCLUDE_DIRECTORIES)
+    #message(STATUS "--------------${PROJECT_INCLUDES}")
+    #string(REGEX REPLACE ";" " " PROJECT_INCLUDES "${PROJECT_INCLUDES}")
+    #file(WRITE  ${CMAKE_CURRENT_BINARY_DIR}/libs/${ANDROID_NDK_ABI_NAME}/gdb.setup "set solib-search-path ./libs/${ANDROID_NDK_ABI_NAME}\n")
+    #file(APPEND ${CMAKE_CURRENT_BINARY_DIR}/libs/${ANDROID_NDK_ABI_NAME}/gdb.setup "directory ${PROJECT_INCLUDES}\n")
 
     # 3. copy gdbserver executable
-    file(COPY ${ANDROID_NDK_ROOT}/prebuilt/android-arm/gdbserver/gdbserver DESTINATION ${CMAKE_CURRENT_BINARY_DIR}/libs/${ANDROID_NDK_ABI_NAME}/)
+    #file(COPY ${ANDROID_NDK_ROOT}/prebuilt/android-arm/gdbserver/gdbserver DESTINATION ${CMAKE_CURRENT_BINARY_DIR}/libs/${ANDROID_NDK_ABI_NAME}/)
     
-    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/nop.sh "#!/bin/bash")
+    #file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/nop.sh "#!/bin/bash")
     
-    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/start_app.sh "#!/bin/bash\n${ANDROID_NDK_ROOT}/ndk-gdb --adb ${ANDROID_SDK_ROOT}/platform-tools/adb --project ${CMAKE_CURRENT_BINARY_DIR} --launch --verbose --nowait --delay 10.0")
+    #file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/start_app.sh "#!/bin/bash\n${ANDROID_NDK_ROOT}/ndk-gdb --adb ${ANDROID_SDK_ROOT}/platform-tools/adb --project ${CMAKE_CURRENT_BINARY_DIR} --launch --verbose --nowait --delay 10.0")
     
-    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/attach_app.sh "#!/bin/bash\n${ANDROID_NDK_ROOT}/ndk-gdb --adb ${ANDROID_SDK_ROOT}/platform-tools/adb --project ${CMAKE_CURRENT_BINARY_DIR} --verbose")
-
-    install(CODE "execute_process(COMMAND \"${CMAKE_COMMAND}\" --build \"${CMAKE_BUILD_DIRECTORY}\" --target apk)")
+    #file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/attach_app.sh "#!/bin/bash\n${ANDROID_NDK_ROOT}/ndk-gdb --adb ${ANDROID_SDK_ROOT}/platform-tools/adb --project ${CMAKE_CURRENT_BINARY_DIR} --verbose")
 
 endfunction(androiddeployqt)
 

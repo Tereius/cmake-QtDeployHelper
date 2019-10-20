@@ -1,0 +1,10 @@
+ <resources>
+  <color name="colorPrimary">#e30425</color>
+  <color name="colorPrimaryDark">#e30425</color>
+  <color name="colorAccent">#FFFFFFFF</color>
+  <color name="test">#000000</color>
+  <color name="primaryText">#000000</color>
+  <color name="buttonNormal">#e30425</color>
+  <color name="buttonHighlight">#ff554f</color>
+  <color name="white">#FFFFFF</color>
+</resources>
