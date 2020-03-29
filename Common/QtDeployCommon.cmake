@@ -37,8 +37,8 @@ endfunction()
 # add_translation(<target> TS_FILES <ts_files> FILES_TO_TRANSLATE <files>)
 function(add_translation TARGET)
     set(options)
-    set(oneValueArgs TS_FILES)
-    set(multiValueArgs FILES_TO_TRANSLATE)
+    set(oneValueArgs)
+    set(multiValueArgs TS_FILES FILES_TO_TRANSLATE)
     cmake_parse_arguments(TRANSL "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
     find_package(Qt5LinguistTools REQUIRED)
     find_package(Qt5Core REQUIRED)
@@ -56,18 +56,11 @@ function(add_translation TARGET)
     foreach(_ts_file ${TRANSL_TS_FILES})
     
         get_filename_component(_abs_ts_FILE ${_ts_file} ABSOLUTE)
-        get_filename_component(ts_FILE_NAME ${_abs_ts_FILE} NAME)
-        get_filename_component(_abs_ts_FILE_DIR ${_abs_ts_FILE} DIRECTORY)
-        
-        string(REGEX REPLACE "\\.[^.]*$" "" QM_FILE_NAME ${ts_FILE_NAME})
-    
-        set(qm_file "${CMAKE_CURRENT_BINARY_DIR}/${QM_FILE_NAME}.qm")
-    
-        message(STATUS "Adding ts file ${_abs_ts_FILE}, generating qm file ${qm_file}")
     
         set(_CONTENT "empty")
         if(NOT EXISTS "${_abs_ts_FILE}")
             get_target_property(lupdate_exe ${Qt5_LUPDATE_EXECUTABLE} IMPORTED_LOCATION)
+            # generate an empty ts file
             execute_process(COMMAND "${lupdate_exe}" "${CMAKE_PARENT_LIST_FILE}" -ts "${_abs_ts_FILE}")
             message(STATUS "Creating empty ts file ${_abs_ts_FILE}")
         endif()
@@ -90,26 +83,7 @@ function(add_translation TARGET)
         
         message(STATUS "Crating merged translation file for language ${CMAKE_MATCH_1}: ${merged_qm}")
         
-        message(STATUS "Translating file ${TRANSL_FILES_TO_TRANSLATE}")
-        
-        set(options ${CMAKE_CURRENT_SOURCE_DIR} ${TRANSL_FILES_TO_TRANSLATE} -I ${CMAKE_CURRENT_SOURCE_DIR} -locations relative -ts ${_abs_ts_FILE})
-        
-        add_custom_command(
-            #TARGET ${TARGET}
-            #PRE_BUILD
-            OUTPUT ${_abs_ts_FILE}
-            COMMAND ${Qt5_LUPDATE_EXECUTABLE} ${options}
-            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-            DEPENDS ${TRANSL_FILES_TO_TRANSLATE}
-            VERBATIM
-        )
-        
-        add_custom_command(OUTPUT ${qm_file}
-            COMMAND ${Qt5_LRELEASE_EXECUTABLE}
-            ARGS ${_abs_ts_FILE} -qm ${qm_file}
-            DEPENDS ${_abs_ts_FILE}
-            VERBATIM
-        )
+        qt5_create_translation(qm_file ${TRANSL_FILES_TO_TRANSLATE} ${_abs_ts_FILE})
         
         set(lconvert_args "-o;${merged_qm};${_QT_TRANSLATION_FILES_LANG};${qm_file}")
         
