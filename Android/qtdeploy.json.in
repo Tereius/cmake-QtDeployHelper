@@ -20,7 +20,7 @@
  "qml-root-path": "@QT_ANDROID_QML_ROOT_PATH@",
  "_qml-import-paths": "Other search paths. The default qml dir given by key 'qt' is already used and doesn't have to be added.",
  "stdcpp-path": "@QT_ANDROID_STL_PATH@",
- "_android-extra-plugins": "/home/bjoern/.conan/data/Qt/5.12.4/tereius/stable/package/0bb183d368bd57e17762a145f8c208fa0d51e02c/translations",
+ "_android-extra-plugins": "Other files. so files will be placed in libs folder other files will be placed in assets folder.",
  @QT_ANDROID_APP_EXTRA_LIBS@
  "android-package-source-directory": "@QT_ANDROID_APP_PACKAGE_SOURCE_ROOT@"
 }
