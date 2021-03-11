@@ -23,6 +23,7 @@ jobs:
         CONAN_CHANNEL: "stable",
         CONAN_REMOTES: "https://tereius.jfrog.io/artifactory/api/conan/public-conan",
         CONAN_BASE_PROFILE_OS: "Android",
+        CONAN_BASE_PROFILE_OS_API: "21",
         CONAN_BASE_PROFILE_OSBUILD: "$(conanBuildOS)"
       }
 
