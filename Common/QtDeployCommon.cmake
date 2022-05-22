@@ -108,6 +108,14 @@ function(add_translation TARGET)
 
 endfunction()
 
+function(string_starts_with str search result)
+  string(FIND "${str}" "${search}" out)
+  if("${out}" EQUAL 0)
+    set(result true PARENT_SCOPE)
+  endif()
+  set(result false PARENT_SCOPE)
+endfunction()
+
 # Allows generator expressions in config files. Accepts all parameters "configure_file()" accepts.
 # WARNING: The creation of the file is delayed until build system generation see https://cmake.org/cmake/help/latest/manual/cmake-generator-expressions.7.html
 macro(configure_file_gen_expr)
