@@ -1,5 +1,7 @@
 include(CMakeParseArguments)
 
+set(COMMON_CURRENT_LIST_DIR ${CMAKE_CURRENT_LIST_DIR} CACHE INTERNAL "")
+
 # copy_replace_in_file(<filename> [REGEX] DESTINATION <dst> MATCH <match_string> REPLACE <replace replace_string>)
 function(copy_replace_in_file)
     set(options REGEX)
@@ -116,3 +118,14 @@ macro(configure_file_gen_expr)
     file(REMOVE "${ARGV1}")
     file(GENERATE OUTPUT "${ARGV1}" CONTENT "${FILE_CONTENT}")
 endmacro()
+
+# If conan is used, Qt is distribted between multiple directories.
+# The qml dir is located outside of the Qt base dir. We have to set the QmlImports to the correct location and provid it via a qt6.conf file.
+function(write_qt6conf TARGET)
+    find_package(Qt6Core REQUIRED)
+    find_path(QT_QML_DIR NAMES QtQml/qmldir PATH_SUFFIXES "lib" "lib/qml" "qml")
+    get_filename_component(QT_BASE_DIR "${Qt6Core_DIR}/../../../" ABSOLUTE)
+    configure_file("${COMMON_CURRENT_LIST_DIR}/qt6.conf.in" "${CMAKE_CURRENT_BINARY_DIR}/qt6.conf.out" @ONLY)
+    file(READ "${CMAKE_CURRENT_BINARY_DIR}/qt6.conf.out" FILE_CONTENT)
+    file(GENERATE OUTPUT "$<TARGET_FILE_DIR:${TARGET}>/qt6.conf" CONTENT "${FILE_CONTENT}")
+endfunction()
