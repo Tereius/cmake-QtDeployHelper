@@ -1,0 +1,17 @@
+#include <QtGlobal>
+#include <QString>
+
+// NOLINTBEGIN
+class PluginPathProvider {
+public:
+  PluginPathProvider() {
+    qputenv("QT_PLUGIN_PATH", QString("@PLUGIN_DIRS@").
+    #if !defined(Q_OS_WIN) && !defined(Q_OS_WINCE)
+    replace(QString(";"), QString(":")).
+    #endif
+    toLocal8Bit());
+  }
+};
+
+static PluginPathProvider initializer;
+// NOLINTEND

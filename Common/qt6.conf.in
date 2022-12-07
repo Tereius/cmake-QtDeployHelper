@@ -1,3 +1,0 @@
-[Paths]
-Prefix = @QT_BASE_DIR@
-QmlImports = @QT_QML_DIR@

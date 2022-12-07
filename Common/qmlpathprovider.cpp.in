@@ -1,0 +1,17 @@
+#include <QtGlobal>
+#include <QString>
+
+// NOLINTBEGIN
+class QmlPathProvider {
+public:
+  QmlPathProvider() {
+    qputenv("QML_IMPORT_PATH", QString("@QML_DIRS@").
+    #if !defined(Q_OS_WIN) && !defined(Q_OS_WINCE)
+    replace(QString(";"), QString(":")).
+    #endif
+    toLocal8Bit());
+  }
+};
+
+static QmlPathProvider initializer;
+// NOLINTEND
